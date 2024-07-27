@@ -1,5 +1,6 @@
 package com.cortex.engine.services;
 
+import com.cortex.engine.controllers.dto.CodeExecutionTask;
 import com.cortex.engine.controllers.dto.ExecutionResponse;
 import com.cortex.engine.controllers.dto.SubmissionRequest;
 import com.cortex.engine.docker.AutoCloseableContainer;
@@ -13,13 +14,22 @@ import com.github.dockerjava.api.async.ResultCallback.Adapter;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
+import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.dockerjava.api.exception.DockerException;
+import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Bind;
+import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.StreamType;
 import com.github.dockerjava.api.model.Volume;
+import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
@@ -46,9 +56,64 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class CodeExecutionService {
 
+  private static final String CODE_EXECUTION_QUEUE = "codeExecution";
+  private static final String RESULT_KEY_PREFIX = "result:";
+  private static final long RESULT_EXPIRATION_HOURS = 1;
+
+  private final RabbitTemplate rabbitTemplate;
+  private final RedisTemplate<String, ExecutionResponse> redisTemplate;
   private final DockerClient dockerClient;
   private final LanguageRepository languageRepository;
   private final SubmissionRepository submissionRepository;
+
+  public String submitCodeExecution(SubmissionRequest request) throws UnsupportedLanguageException {
+    // Verificamos si el lenguaje es soportado
+    if (!languageRepository.existsByName(request.language())) {
+      throw new UnsupportedLanguageException("Unsupported language: " + request.language());
+    }
+
+    String taskId = UUID.randomUUID().toString();
+    CodeExecutionTask task = new CodeExecutionTask();
+    task.setTaskId(taskId);
+    task.setSubmissionRequest(request);
+
+    rabbitTemplate.convertAndSend(CODE_EXECUTION_QUEUE, task);
+
+    return taskId;
+  }
+
+  public ExecutionResponse getExecutionResult(String taskId) throws CodeExecutionException {
+    ExecutionResponse result = redisTemplate.opsForValue().get(RESULT_KEY_PREFIX + taskId);
+
+    if (result == null) {
+      throw new CodeExecutionException("Execution result not available yet");
+    }
+
+    return result;
+  }
+
+  public void processCodeExecution(CodeExecutionTask task) {
+    try {
+      ExecutionResponse result = executeCode(task.getSubmissionRequest());
+      redisTemplate
+          .opsForValue()
+          .set(
+              RESULT_KEY_PREFIX + task.getTaskId(),
+              result,
+              RESULT_EXPIRATION_HOURS,
+              TimeUnit.HOURS);
+    } catch (Exception e) {
+      log.error("Error processing code execution task", e);
+      ExecutionResponse errorResponse = new ExecutionResponse(null, 4, e.getMessage());
+      redisTemplate
+          .opsForValue()
+          .set(
+              RESULT_KEY_PREFIX + task.getTaskId(),
+              errorResponse,
+              RESULT_EXPIRATION_HOURS,
+              TimeUnit.HOURS);
+    }
+  }
 
   /**
    * Executes the submitted code in a Docker container.
@@ -58,7 +123,7 @@ public class CodeExecutionService {
    * @throws CodeExecutionException If an error occurs during code execution.
    * @throws UnsupportedLanguageException If the specified programming language is not supported.
    */
-  public ExecutionResponse executeCode(SubmissionRequest request) throws CodeExecutionException {
+  private ExecutionResponse executeCode(SubmissionRequest request) throws CodeExecutionException {
     Language language =
         languageRepository
             .findByName(request.language())
@@ -78,7 +143,7 @@ public class CodeExecutionService {
 
       try (AutoCloseableContainer container =
           new AutoCloseableContainer(
-              createContainer(language, codePath, stdinPath), dockerClient)) {
+              createAndStartContainer(language, codePath, stdinPath), dockerClient)) {
         startContainer(container);
 
         ExecutionResult result =
@@ -118,30 +183,59 @@ public class CodeExecutionService {
    * @return A CreateContainerResponse object representing the created container.
    * @throws ContainerCreationException If the container creation fails.
    */
-  private CreateContainerResponse createContainer(
+  private CreateContainerResponse createAndStartContainer(
       Language language, Path codePath, Path stdinPath) {
+    String containerName = "cortex-" + UUID.randomUUID();
     Volume codeVolume = new Volume("/code");
     Volume stdinVolume = new Volume("/stdin");
 
-    try (CreateContainerCmd containerCmd =
-        dockerClient.createContainerCmd(language.getDockerImage())) {
-      return containerCmd
-          .withHostConfig(
-              HostConfig.newHostConfig()
-                  .withBinds(
-                      new Bind(codePath.getParent().toString(), codeVolume),
-                      new Bind(stdinPath.getParent().toString(), stdinVolume))
-                  .withMemory(language.getDefaultMemoryLimit())
-                  .withCpuCount(language.getDefaultCpuLimit()))
-          .withCmd("tail", "-f", "/dev/null") // Keep container running
-          .withWorkingDir("/code")
-          .withTty(true)
-          .withAttachStderr(true)
-          .withAttachStdout(true)
-          .exec();
+    try {
+      // Verificar si existe un contenedor con el mismo nombre
+      List<Container> existingContainers =
+          dockerClient
+              .listContainersCmd()
+              .withShowAll(true)
+              .withNameFilter(Collections.singletonList(containerName))
+              .exec();
+
+      if (!existingContainers.isEmpty()) {
+        String existingContainerId = existingContainers.getFirst().getId();
+        log.info("Container with name {} already exists. Removing it.", containerName);
+        dockerClient.removeContainerCmd(existingContainerId).withForce(true).exec();
+      }
+
+      // Crear un nuevo contenedor
+      CreateContainerResponse container =
+          dockerClient
+              .createContainerCmd(language.getDockerImage())
+              .withName(containerName)
+              .withHostConfig(
+                  HostConfig.newHostConfig()
+                      .withBinds(
+                          new Bind(codePath.getParent().toString(), codeVolume),
+                          new Bind(stdinPath.getParent().toString(), stdinVolume))
+                      .withMemory(language.getDefaultMemoryLimit())
+                      .withCpuCount(language.getDefaultCpuLimit()))
+              .withCmd("tail", "-f", "/dev/null")
+              .withWorkingDir("/code")
+              .withTty(true)
+              .withAttachStderr(true)
+              .withAttachStdout(true)
+              .exec();
+
+      // Start the container
+      dockerClient.startContainerCmd(container.getId()).exec();
+      log.info("Container started successfully: {}", container.getId());
+
+      // Install dotnet-script if the language is C#
+      if ("csharp".equals(language.getName())) {
+        installDotnetScript(container.getId());
+      }
+
+      return container;
     } catch (Exception e) {
       throw new ContainerCreationException(
-          "Failed to create Docker container: " + e.getMessage(), e);
+          "Failed to create or start Docker container: " + e.getMessage(), e);
     }
   }
 
@@ -152,10 +246,28 @@ public class CodeExecutionService {
    * @throws ContainerStartException If the container fails to start.
    */
   private void startContainer(AutoCloseableContainer container) {
+    String containerId = container.getContainer().getId();
     try {
-      dockerClient.startContainerCmd(container.getContainer().getId()).exec();
+      // Check if the container exists and get its state
+      InspectContainerResponse containerInfo = dockerClient.inspectContainerCmd(containerId).exec();
+
+      if (Boolean.TRUE.equals(containerInfo.getState().getRunning())) {
+        log.info("Container {} is already in a running state. No action needed.", containerId);
+        return;
+      }
+
+      // Attempt to start the container
+      dockerClient.startContainerCmd(containerId).exec();
+      log.info("Container {} started successfully", containerId);
+    } catch (NotModifiedException e) {
+      // This might occur if the container started between our check and the start command
+      log.warn(
+          "Attempted to start container {} but it was already running. This might indicate a race condition.",
+          containerId);
     } catch (Exception e) {
-      throw new ContainerStartException("Failed to start Docker container: " + e.getMessage(), e);
+      log.error("Failed to start or inspect container {}. Error: {}", containerId, e.getMessage());
+      throw new ContainerStartException(
+          "Failed to start or inspect Docker container: " + e.getMessage(), e);
     }
   }
 
@@ -301,6 +413,36 @@ public class CodeExecutionService {
       } catch (IOException e) {
         log.error("Failed to delete temporary file: {}", e.getMessage());
       }
+    }
+  }
+
+  private void installDotnetScript(String containerId) {
+    String[] installCommand = {
+      "/bin/sh",
+      "-c",
+      "dotnet tool install -g dotnet-script && export PATH=\"$PATH:/root/.dotnet/tools\""
+    };
+    try {
+      ExecCreateCmdResponse execCreateCmdResponse =
+          dockerClient.execCreateCmd(containerId).withCmd(installCommand).exec();
+
+      dockerClient
+          .execStartCmd(execCreateCmdResponse.getId())
+          .exec(
+              new Adapter<Frame>() {
+                @Override
+                public void onNext(Frame object) {
+                  log.info("Installing dotnet-script: {}", object.toString());
+                }
+              })
+          .awaitCompletion(60, TimeUnit.SECONDS);
+
+      log.info("dotnet-script installed successfully in container: {}", containerId);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ContainerCreationException("Container creation was interrupted", e);
+    } catch (Exception e) {
+      throw new ContainerCreationException("Failed to install dotnet-script: " + e.getMessage(), e);
     }
   }
 

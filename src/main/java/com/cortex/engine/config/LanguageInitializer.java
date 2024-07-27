@@ -50,6 +50,36 @@ public class LanguageInitializer implements CommandLineRunner {
                   .defaultCpuLimit(1L)
                   .defaultTimeout(5000L) // 5 seconds
                   .createdBy(1L)
+                  .build(),
+              Language.builder()
+                  .name("rust")
+                  .dockerImage("rust:1.80-slim")
+                  .executeCommand("mkdir src && mv {fileName} src/main.rs && cargo init --bin && cargo run")
+                  .fileExtension(".rs")
+                  .defaultMemoryLimit(256 * 1024 * 1024L) // 256 MB
+                  .defaultCpuLimit(1L)
+                  .defaultTimeout(15000L) // 15 seconds
+                  .createdBy(1L)
+                  .build(),
+              Language.builder()
+                  .name("csharp")
+                  .dockerImage("mcr.microsoft.com/dotnet/sdk:8.0")
+                  .executeCommand("dotnet script {fileName}")
+                  .fileExtension(".cs")
+                  .defaultMemoryLimit(512 * 1024 * 1024L) // 512 MB
+                  .defaultCpuLimit(2L)
+                  .defaultTimeout(30000L) // 30 seconds
+                  .createdBy(1L)
+                  .build(),
+              Language.builder()
+                  .name("go")
+                  .dockerImage("golang:1.22-bookworm")
+                  .executeCommand("go run {fileName}")
+                  .fileExtension(".go")
+                  .defaultMemoryLimit(256 * 1024 * 1024L) // 256 MB
+                  .defaultCpuLimit(1L)
+                  .defaultTimeout(10000L) // 10 seconds
+                  .createdBy(1L)
                   .build());
 
       languageRepository.saveAll(predefinedLanguages);

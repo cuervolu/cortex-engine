@@ -8,4 +8,6 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface LanguageRepository extends CrudRepository<Language, Long> {
   Optional<Language> findByName(String name);
+
+  boolean existsByName(String name);
 }

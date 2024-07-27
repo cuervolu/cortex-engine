@@ -5,10 +5,7 @@ import com.cortex.engine.controllers.dto.SubmissionRequest;
 import com.cortex.engine.services.CodeExecutionService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/execute")
@@ -18,12 +15,22 @@ public class CodeExecutionController {
   private final CodeExecutionService codeExecutionService;
 
   @PostMapping
-  public ResponseEntity<ExecutionResponse> executeCode(@RequestBody SubmissionRequest request) {
+  public ResponseEntity<String> submitCode(@RequestBody SubmissionRequest request) {
     try {
-      ExecutionResponse response = codeExecutionService.executeCode(request);
-      return ResponseEntity.ok(response);
+      String taskId = codeExecutionService.submitCodeExecution(request);
+      return ResponseEntity.ok(taskId);
     } catch (Exception e) {
-      return ResponseEntity.badRequest().body(new ExecutionResponse(null, 1, e.getMessage()));
+      return ResponseEntity.badRequest().body(e.getMessage());
+    }
+  }
+
+  @GetMapping("/{taskId}")
+  public ResponseEntity<ExecutionResponse> getExecutionResult(@PathVariable String taskId) {
+    try {
+      ExecutionResponse result = codeExecutionService.getExecutionResult(taskId);
+      return ResponseEntity.ok(result);
+    } catch (Exception e) {
+      return ResponseEntity.badRequest().body(new ExecutionResponse(null, 4, e.getMessage()));
     }
   }
 }
