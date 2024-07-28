@@ -54,7 +54,7 @@ public class LanguageInitializer implements CommandLineRunner {
               Language.builder()
                   .name("rust")
                   .dockerImage("rust:1.80-slim")
-                  .executeCommand("mkdir src && mv {fileName} src/main.rs && cargo init --bin && cargo run")
+                  .executeCommand("mv {fileName} main.rs && rustc main.rs && ./main")
                   .fileExtension(".rs")
                   .defaultMemoryLimit(256 * 1024 * 1024L) // 256 MB
                   .defaultCpuLimit(1L)
@@ -64,7 +64,7 @@ public class LanguageInitializer implements CommandLineRunner {
               Language.builder()
                   .name("csharp")
                   .dockerImage("mcr.microsoft.com/dotnet/sdk:8.0")
-                  .executeCommand("dotnet script {fileName}")
+                  .executeCommand("dotnet new console -o . && mv {fileName} Program.cs && dotnet run")
                   .fileExtension(".cs")
                   .defaultMemoryLimit(512 * 1024 * 1024L) // 512 MB
                   .defaultCpuLimit(2L)
