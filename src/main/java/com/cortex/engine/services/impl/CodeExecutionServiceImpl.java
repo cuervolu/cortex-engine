@@ -1,4 +1,4 @@
-package com.cortex.engine.services;
+package com.cortex.engine.services.impl;
 
 import com.cortex.engine.controllers.dto.CodeExecutionTask;
 import com.cortex.engine.controllers.dto.ExecutionResponse;
@@ -9,13 +9,12 @@ import com.cortex.engine.entities.Submission;
 import com.cortex.engine.exceptions.*;
 import com.cortex.engine.repositories.LanguageRepository;
 import com.cortex.engine.repositories.SubmissionRepository;
+import com.cortex.engine.services.ICodeExecutionService;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.async.ResultCallback.Adapter;
-import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.ExecCreateCmdResponse;
 import com.github.dockerjava.api.command.InspectContainerResponse;
-import com.github.dockerjava.api.exception.DockerException;
 import com.github.dockerjava.api.exception.NotModifiedException;
 import com.github.dockerjava.api.model.Bind;
 import com.github.dockerjava.api.model.Container;
@@ -54,7 +53,7 @@ import java.util.concurrent.TimeUnit;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class CodeExecutionService {
+public class CodeExecutionServiceImpl implements ICodeExecutionService {
 
   private static final String CODE_EXECUTION_QUEUE = "codeExecution";
   private static final String RESULT_KEY_PREFIX = "result:";
@@ -66,6 +65,7 @@ public class CodeExecutionService {
   private final LanguageRepository languageRepository;
   private final SubmissionRepository submissionRepository;
 
+  @Override
   public String submitCodeExecution(SubmissionRequest request) throws UnsupportedLanguageException {
     // Verificamos si el lenguaje es soportado
     if (!languageRepository.existsByName(request.language())) {
@@ -82,6 +82,7 @@ public class CodeExecutionService {
     return taskId;
   }
 
+  @Override
   public ExecutionResponse getExecutionResult(String taskId) throws CodeExecutionException {
     ExecutionResponse result = redisTemplate.opsForValue().get(RESULT_KEY_PREFIX + taskId);
 
@@ -92,6 +93,7 @@ public class CodeExecutionService {
     return result;
   }
 
+  @Override
   public void processCodeExecution(CodeExecutionTask task) {
     try {
       ExecutionResponse result = executeCode(task.getSubmissionRequest());

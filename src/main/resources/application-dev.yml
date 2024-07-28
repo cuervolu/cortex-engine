@@ -27,3 +27,8 @@ logging:
     org:
       springframework:
         security: DEBUG
+docker:
+  cleanup:
+    interval-ms: 3600000  # 1 hora
+    container:
+      max-age-hours: 24  # 24 horas
