@@ -40,14 +40,25 @@ import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Service responsible for executing code submissions in isolated Docker containers.
+ * Service implementation responsible for executing code submissions in isolated Docker containers.
  *
  * <p>This service handles the creation of Docker containers, execution of code within these
  * containers, and processing of the execution results. It supports multiple programming languages
  * and provides a secure environment for code execution.
  *
+ * <p>Key features include:
+ *
+ * <ul>
+ *   <li>Submitting code execution tasks to a message queue
+ *   <li>Retrieving execution results from a Redis cache
+ *   <li>Creating and managing Docker containers for code execution
+ *   <li>Supporting multiple programming languages
+ *   <li>Handling file operations for code and input
+ *   <li>Implementing error handling and logging
+ * </ul>
+ *
  * @author Ángel Cuervo
- * @version 1.0
+ * @version 1.1
  * @since 2024-07-26
  */
 @Service
@@ -418,6 +429,13 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
     }
   }
 
+  /**
+   * Installs the dotnet-script tool in a Docker container. This method is specifically used for C#
+   * code execution.
+   *
+   * @param containerId The ID of the Docker container where dotnet-script will be installed
+   * @throws ContainerCreationException if the installation process fails or is interrupted
+   */
   private void installDotnetScript(String containerId) {
     String[] installCommand = {
       "/bin/sh",
