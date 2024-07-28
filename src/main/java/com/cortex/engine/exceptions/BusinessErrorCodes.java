@@ -12,7 +12,8 @@ public enum BusinessErrorCodes {
   CONTAINER_START_ERROR(308, INTERNAL_SERVER_ERROR, "Failed to start Docker container"),
   CODE_COMPILATION_ERROR(309, BAD_REQUEST, "Code compilation failed"),
   EXECUTION_TIMEOUT(310, REQUEST_TIMEOUT, "Code execution timed out"),
-  FILE_OPERATION_ERROR(311, INTERNAL_SERVER_ERROR, "Error in file operation");
+  FILE_OPERATION_ERROR(311, INTERNAL_SERVER_ERROR, "Error in file operation"),
+  VALIDATION_ERROR(400, BAD_REQUEST, "Validation error occurred");
 
   private final int code;
   private final String description;
