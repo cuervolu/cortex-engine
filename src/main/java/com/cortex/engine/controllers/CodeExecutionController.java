@@ -4,6 +4,7 @@ import com.cortex.engine.controllers.dto.ExecutionResponse;
 import com.cortex.engine.controllers.dto.SubmissionRequest;
 import com.cortex.engine.controllers.dto.SubmissionResponse;
 import com.cortex.engine.services.impl.CodeExecutionServiceImpl;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -16,7 +17,8 @@ public class CodeExecutionController {
   private final CodeExecutionServiceImpl codeExecutionServiceImpl;
 
   @PostMapping
-  public ResponseEntity<SubmissionResponse> submitCode(@RequestBody SubmissionRequest request) {
+  public ResponseEntity<SubmissionResponse> submitCode(
+      @Valid @RequestBody SubmissionRequest request) {
     try {
       String taskId = codeExecutionServiceImpl.submitCodeExecution(request);
       return ResponseEntity.ok(new SubmissionResponse(taskId, "Code submission successful"));
