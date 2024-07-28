@@ -2,6 +2,7 @@ package com.cortex.engine.controllers;
 
 import com.cortex.engine.controllers.dto.ExecutionResponse;
 import com.cortex.engine.controllers.dto.SubmissionRequest;
+import com.cortex.engine.controllers.dto.SubmissionResponse;
 import com.cortex.engine.services.impl.CodeExecutionServiceImpl;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -15,12 +16,12 @@ public class CodeExecutionController {
   private final CodeExecutionServiceImpl codeExecutionServiceImpl;
 
   @PostMapping
-  public ResponseEntity<String> submitCode(@RequestBody SubmissionRequest request) {
+  public ResponseEntity<SubmissionResponse> submitCode(@RequestBody SubmissionRequest request) {
     try {
       String taskId = codeExecutionServiceImpl.submitCodeExecution(request);
-      return ResponseEntity.ok(taskId);
+      return ResponseEntity.ok(new SubmissionResponse(taskId, "Code submission successful"));
     } catch (Exception e) {
-      return ResponseEntity.badRequest().body(e.getMessage());
+      return ResponseEntity.badRequest().body(new SubmissionResponse(null, e.getMessage()));
     }
   }
 
