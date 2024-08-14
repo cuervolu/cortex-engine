@@ -152,8 +152,11 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
           createTempFile(
               "code" + language.getFileExtension(),
               new String(Base64.getDecoder().decode(request.code()), StandardCharsets.UTF_8));
-      stdinPath = createTempFile("stdin.txt", request.stdin());
 
+      if (request.stdin() != null) {
+
+        stdinPath = createTempFile("stdin.txt", request.stdin());
+      }
       try (AutoCloseableContainer container =
           new AutoCloseableContainer(
               createAndStartContainer(language, codePath, stdinPath), dockerClient)) {
@@ -164,7 +167,7 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
                 container,
                 language,
                 codePath.getFileName().toString(),
-                stdinPath.getFileName().toString());
+                stdinPath != null ? stdinPath.getFileName().toString() : null);
         saveSubmission(request, language);
 
         String stdout = encodeIfRequired(result.stdout, request.encodeOutputToBase64());
@@ -217,18 +220,21 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
         dockerClient.removeContainerCmd(existingContainerId).withForce(true).exec();
       }
 
-      // Crear un nuevo contenedor
+      HostConfig hostConfig =
+          new HostConfig()
+              .withMemory(language.getDefaultMemoryLimit())
+              .withCpuCount(language.getDefaultCpuLimit())
+              .withBinds(new Bind(codePath.getParent().toString(), codeVolume));
+
+      if (stdinPath != null) {
+        hostConfig.withBinds(new Bind(stdinPath.getParent().toString(), stdinVolume));
+      }
+
       CreateContainerResponse container =
           dockerClient
               .createContainerCmd(language.getDockerImage())
               .withName(containerName)
-              .withHostConfig(
-                  HostConfig.newHostConfig()
-                      .withBinds(
-                          new Bind(codePath.getParent().toString(), codeVolume),
-                          new Bind(stdinPath.getParent().toString(), stdinVolume))
-                      .withMemory(language.getDefaultMemoryLimit())
-                      .withCpuCount(language.getDefaultCpuLimit()))
+              .withHostConfig(hostConfig)
               .withCmd("tail", "-f", "/dev/null")
               .withWorkingDir("/code")
               .withTty(true)
@@ -284,16 +290,6 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
     }
   }
 
-  /**
-   * Executes the code inside the Docker container.
-   *
-   * @param container The container in which to execute the code.
-   * @param language The programming language of the code.
-   * @param codeFileName The name of the file containing the code.
-   * @param stdinFileName The name of the file containing standard input.
-   * @return An ExecutionResult object containing the execution output and status.
-   * @throws ExecutionTimeoutException If the code execution times out.
-   */
   private ExecutionResult executeCodeInContainer(
       AutoCloseableContainer container,
       Language language,
@@ -305,39 +301,19 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
 
     try {
       String executeCommand = buildCommand(language, codeFileName, stdinFileName);
-      ExecCreateCmdResponse execCreateCmdResponse =
-          dockerClient
-              .execCreateCmd(container.getContainer().getId())
-              .withAttachStdout(true)
-              .withAttachStderr(true)
-              .withCmd("/bin/sh", "-c", executeCommand)
-              .exec();
 
-      dockerClient
-          .execStartCmd(execCreateCmdResponse.getId())
-          .exec(
-              new Adapter<Frame>() {
-                @Override
-                public void onNext(Frame frame) {
-                  byte[] payload = frame.getPayload();
-                  if (payload != null) {
-                    try {
-                      if (frame.getStreamType() == StreamType.STDOUT) {
-                        stdout.write(payload);
-                      } else if (frame.getStreamType() == StreamType.STDERR) {
-                        stderr.write(payload);
-                      }
-                    } catch (IOException e) {
-                      log.error("Error writing to output stream", e);
-                    }
-                  }
-                }
-              })
-          .awaitCompletion(language.getDefaultTimeout(), TimeUnit.MILLISECONDS);
+      if ("rust".equals(language.getName())) {
+        ExecutionResult compileResult = compileRustCode(container, codeFileName, language);
+        if (compileResult.statusId != 3) {
+          return compileResult;
+        }
+        executeCommand = buildRustExecuteCommand(codeFileName);
+      }
 
-      Long exitCode =
-          dockerClient.inspectExecCmd(execCreateCmdResponse.getId()).exec().getExitCodeLong();
-      int statusId = (exitCode != null && exitCode == 0) ? 3 : 4;
+      ExecCreateCmdResponse execCreateCmdResponse = createExecCommand(container, executeCommand);
+      executeCommand(execCreateCmdResponse, language.getDefaultTimeout(), stdout, stderr);
+
+      int statusId = getExecutionStatus(execCreateCmdResponse);
 
       return new ExecutionResult(
           stdout.toString(StandardCharsets.UTF_8),
@@ -349,6 +325,83 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
     } catch (Exception e) {
       log.error("Error executing code in container", e);
       return new ExecutionResult("", e.getMessage(), 4);
+    }
+  }
+
+  private ExecutionResult compileRustCode(
+      AutoCloseableContainer container, String codeFileName, Language language)
+      throws InterruptedException {
+    ExecCreateCmdResponse compileResponse = createExecCommand(container, "rustc " + codeFileName);
+    executeCommand(compileResponse, language.getDefaultTimeout(), null, null);
+
+    Long compileExitCode = getExitCode(compileResponse);
+    if (compileExitCode != null && compileExitCode != 0) {
+      return new ExecutionResult("", "Compilation failed", 4);
+    }
+    return new ExecutionResult("", "", 3);
+  }
+
+  private String buildRustExecuteCommand(String codeFileName) {
+    String fileNameWithoutExtension = codeFileName.substring(0, codeFileName.lastIndexOf('.'));
+    return "./" + fileNameWithoutExtension;
+  }
+
+  private ExecCreateCmdResponse createExecCommand(
+      AutoCloseableContainer container, String command) {
+    return dockerClient
+        .execCreateCmd(container.getContainer().getId())
+        .withAttachStdout(true)
+        .withAttachStderr(true)
+        .withCmd("/bin/sh", "-c", command)
+        .exec();
+  }
+
+  private void executeCommand(
+      ExecCreateCmdResponse execCreateCmdResponse,
+      Long timeout,
+      ByteArrayOutputStream stdout,
+      ByteArrayOutputStream stderr)
+      throws InterruptedException {
+    dockerClient
+        .execStartCmd(execCreateCmdResponse.getId())
+        .exec(new OutputAdapter(stdout, stderr))
+        .awaitCompletion(timeout, TimeUnit.MILLISECONDS);
+  }
+
+  private int getExecutionStatus(ExecCreateCmdResponse execCreateCmdResponse) {
+    Long exitCode = getExitCode(execCreateCmdResponse);
+    return (exitCode != null && exitCode == 0) ? 3 : 4;
+  }
+
+  private Long getExitCode(ExecCreateCmdResponse execCreateCmdResponse) {
+    return dockerClient.inspectExecCmd(execCreateCmdResponse.getId()).exec().getExitCodeLong();
+  }
+
+  private static class OutputAdapter extends Adapter<Frame> {
+    private final ByteArrayOutputStream stdout;
+    private final ByteArrayOutputStream stderr;
+
+    OutputAdapter(ByteArrayOutputStream stdout, ByteArrayOutputStream stderr) {
+      this.stdout = stdout;
+      this.stderr = stderr;
+    }
+
+    @Override
+    public void onNext(Frame frame) {
+      if (stdout == null || stderr == null) return;
+
+      byte[] payload = frame.getPayload();
+      if (payload != null) {
+        try {
+          if (frame.getStreamType() == StreamType.STDOUT) {
+            stdout.write(payload);
+          } else if (frame.getStreamType() == StreamType.STDERR) {
+            stderr.write(payload);
+          }
+        } catch (IOException e) {
+          log.error("Error writing to output stream", e);
+        }
+      }
     }
   }
 
@@ -397,21 +450,53 @@ public class CodeExecutionServiceImpl implements ICodeExecutionService {
    */
   private String buildCommand(Language language, String codeFileName, String stdinFileName) {
     String executeCommand = language.getExecuteCommand().replace("{fileName}", codeFileName);
-    return "cat /stdin/" + stdinFileName + " | " + executeCommand;
+    if ("rust".equals(language.getName())) {
+      // For Rust, we'll handle compilation separately, so just return the run command
+      String fileNameWithoutExtension = codeFileName.substring(0, codeFileName.lastIndexOf('.'));
+      executeCommand = "./" + fileNameWithoutExtension;
+    }
+    if (stdinFileName != null) {
+      return "cat /stdin/" + stdinFileName + " | " + executeCommand;
+    } else {
+      return executeCommand;
+    }
   }
 
   /**
-   * Creates a temporary file with the given content.
+   * Creates a temporary file with the given code content.
    *
    * @param fileName The name of the file to create.
    * @param content The content to write to the file.
-   * @return The Path object representing the created file.
-   * @throws IOException If an I/O error occurs.
+   * @return The Path object representing the created temporary file.
+   * @throws IllegalArgumentException If the code is null or empty.
+   * @throws IOException If an I/O error occurs during file creation or writing.
    */
   private Path createTempFile(String fileName, String content) throws IOException {
-    Path tempFile = Files.createTempFile(null, fileName);
-    Files.writeString(tempFile, content, StandardCharsets.UTF_8);
-    return tempFile;
+    log.info(
+        "Creating temporary file with name: {} and content length: {}", fileName, content.length());
+    if (content.isEmpty()) {
+      throw new IllegalArgumentException("Content cannot be null or empty");
+    }
+
+    Path tempFile = null;
+    try {
+      // Use the provided fileName directly
+      tempFile = Files.createTempFile("cortex_code_", fileName);
+      log.info("Temporary file created: {}", tempFile);
+      Files.writeString(tempFile, content);
+      log.info("Content written to temporary file");
+      return tempFile;
+    } catch (IOException e) {
+      log.error("Error creating or writing to temporary file", e);
+      if (tempFile != null) {
+        try {
+          Files.deleteIfExists(tempFile);
+        } catch (IOException deleteError) {
+          log.warn("Failed to delete temporary file after error", deleteError);
+        }
+      }
+      throw e;
+    }
   }
 
   /**

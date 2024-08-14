@@ -27,6 +27,7 @@ logging:
     org:
       springframework:
         security: DEBUG
+        web: DEBUG
 docker:
   cleanup:
     interval-ms: 3600000  # 1 hora
