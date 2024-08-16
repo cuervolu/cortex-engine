@@ -14,21 +14,23 @@ services:
     ports:
       - '5432:5432'
     restart: unless-stopped
-
+  
   directus:
-    image: directus/directus:10.11.2
+    image: directus/directus:11.0.2
     container_name: cortex_directus
     depends_on:
       - postgres
     ports:
       - '8055:8055'
     volumes:
-      - ./cms/directus/database:/directus/database
-      - ./cms/directus/uploads:/directus/uploads
-      - ./cms/directus/extensions:/directus/extensions
+      - ./cms/database:/directus/database
+      - ./cms/uploads:/directus/uploads
+      - ./cms/extensions:/directus/extensions
     env_file:
       - .env
     environment:
+      ADMIN_EMAIL: "admin@example.com"
+      ADMIN_PASSWORD: "admin"
       DB_CLIENT: ${DB_CLIENT}
       DB_HOST: postgres
       DB_PORT: ${DB_PORT}
